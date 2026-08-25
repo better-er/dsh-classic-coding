@@ -34,6 +34,12 @@
 
 右侧滑入的完整编辑面板：左侧文件树、顶部多文件 Tab、中部 Monaco 编辑器、底部状态栏。
 
+## 演示视频
+
+| 古法编程插件演示（42 秒） |
+| :---: |
+| [![古法编程插件演示](https://i2.hdslb.com/bfs/archive/0d8bde731b526538d69ec983883a4bf755d6cf81.jpg)](https://www.bilibili.com/video/BV1d28i6rEEz/) |
+
 ## 要求
 
 - 是**标准形态的 dsh 客户端插件**（声明 `dsh.client`、导出 `./client`）。
