@@ -38,7 +38,7 @@
 
 ## 演示视频
 
-| 古法编程插件演示（42 秒） |
+| 古法编程插件演示 · 42 秒 |
 | :---: |
 | [![古法编程插件演示](https://i2.hdslb.com/bfs/archive/0d8bde731b526538d69ec983883a4bf755d6cf81.jpg)](https://www.bilibili.com/video/BV1d28i6rEEz/) |
 
@@ -67,7 +67,6 @@ dsh plugin --profile web remove dsh-classic-coding
 - **UI 挂载点**：`sidebar.footer.action` 触发按钮、`shell.overlay` 编辑器面板两个插槽注入。
 - **样式**：DSH 主题 CSS 变量 `--dsw-alias-*`，明暗主题自适应，`data-ds-dark-theme` 属性变化时实时跟随切换 Monaco 主题。
 - **编辑器加载**：Monaco Editor 经 CDN 动态加载，React 组件从 loader 的 module table 获取，不引入任何额外 npm 依赖。
-- **硬性约束**：`lib/client.js` 的 `factory` 必须以 `return module.exports` 结尾，否则模块导出为 `undefined`，DSH 启动即 fail-loud。
 
 ## License
 
