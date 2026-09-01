@@ -35,5 +35,9 @@
     "cordis.patch.yml",
     "docs/"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/better-er/dsh-classic-coding.git"
+  },
   "license": "MIT"
 }
