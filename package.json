@@ -1,6 +1,6 @@
 {
   "name": "dsh-classic-coding",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "古法编程：在 DSH Web UI 中提供 Monaco 编辑器 + 文件树覆盖层面板",
   "keywords": [
     "deepseek-harness",
@@ -10,11 +10,18 @@
     "editor",
     "monaco"
   ],
+  "packageManager": "pnpm@9.15.9",
   "type": "module",
   "main": "lib/index.js",
+  "types": "lib/index.d.ts",
   "exports": {
-    ".": "./lib/index.js",
-    "./client": "./lib/client.js",
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -31,10 +38,24 @@
   },
   "files": [
     "lib/index.js",
+    "lib/index.d.ts",
     "lib/client.js",
+    "lib/client.js.map",
     "cordis.patch.yml",
     "docs/"
   ],
+  "scripts": {
+    "build": "tsdown",
+    "prepare": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "smoke": "node smoke/verify.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "~18.3.1",
+    "tsdown": "^0.23.0",
+    "typescript": "^5.9.3"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/better-er/dsh-classic-coding.git"

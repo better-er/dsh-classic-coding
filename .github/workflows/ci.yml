@@ -1,0 +1,62 @@
+name: CI
+
+# 每次 push 到主分支、以及任何 PR 包括来自 fork 的 PR 都自动跑完整检查。
+# 本插件采用 TypeScript 源码与 tsdown 构建，CI 会安装锁定依赖并重建发布产物。
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    # fork PR 也可触发；此工作流不读写仓库 secrets，fork 环境下安全。
+    branches:
+      - main
+
+# 同一分支/PR 上排队的新提交会取消正在跑的旧任务，避免资源浪费。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: 类型检查 · 构建 · 产物校验
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 本地与线上主推的运行时；两个版本都验证一次。
+        node:
+          - 22
+          - 26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 配置 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 类型检查
+        run: pnpm typecheck
+
+      - name: 构建
+        run: pnpm build
+
+      # 出厂文件齐全性校验，缺失会在此失败，让 PR 作者一眼看到问题。
+      - name: 产物齐全性校验
+        run: |
+          test -f lib/index.js
+          test -f lib/index.d.ts
+          test -f lib/client.js
+          test -f lib/client.js.map
+          test -f cordis.patch.yml
+          test -f package.json
+          echo "发布产物齐全"

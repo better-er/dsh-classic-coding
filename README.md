@@ -44,11 +44,19 @@
 
 ## 安装
 
+**从 GitHub 安装**：源码在 `src/`，`lib/` 不入仓库，安装时 npm 会触发 `prepare` 脚本现场构建。
+
 ```powershell
 dsh plugin --profile web add github:better-er/dsh-classic-coding
 ```
 
-一条命令装完即生效，自动挂载，重启 DSH web 后启用，无需手工编辑任何组合文件。
+**从 npm 安装**：包内已含构建产物 `lib/index.js` 与 `lib/client.js`，安装时不再构建。
+
+```powershell
+dsh plugin --profile web add dsh-classic-coding
+```
+
+两种方式装完都会自动挂载，重启 DSH web 后启用，无需手工编辑任何文件。
 
 ## 卸载
 
@@ -63,7 +71,7 @@ dsh plugin --profile web remove dsh-classic-coding
 - **标准形态**：dsh 客户端插件，声明 `dsh.client`、导出 `./client`。
 - **自挂载 bundle**：同时声明 `dsh.bundle`，用 `dsh plugin --profile web add` 从 GitHub 安装后自动识别为 profile layer 并挂载，无需手工写组合 entry。
 - **独立 RPC 通道**：Host 端经 `ctx.connection.rpc.handle('/classic-coding', ...)` 注册 `describe` / `listDir` / `readFile` / `writeFile` 四个端点，提供文件树与编辑器读写，底层走 DSH 内置 `ctx.fs` 文件系统服务。`/api` 共享通道的唯一拦截器槽位已被官方 gateway 占用，插件端点必须走 handle 独立通道。
-- **无构建**：`lib/index.js` 与 `lib/client.js` 均为源码即产物，`package.json` 声明 `dsh.client.platform: "web"`、`exports["./client"] → ./lib/client.js`，改完即用。
+- **构建产物**：源码在 `src/`，用 tsdown 构建出 `lib/index.js`、`lib/index.d.ts` 与 `lib/client.js`。`lib/` 不入库，从 GitHub 安装时由 `prepare` 自动构建；本地开发跑 `pnpm install` 后 `pnpm build`，类型检查用 `pnpm typecheck`。`package.json` 声明 `dsh.client.platform: "web"`、`exports["./client"] → ./lib/client.js`。
 - **UI 挂载点**：`sidebar.footer.action` 触发按钮、`shell.overlay` 编辑器面板两个插槽注入。
 - **样式**：DSH 主题 CSS 变量 `--dsw-alias-*`，明暗主题自适应，`data-ds-dark-theme` 属性变化时实时跟随切换 Monaco 主题。
 - **编辑器加载**：Monaco Editor 经 CDN 动态加载，React 组件从 loader 的 module table 获取，不引入任何额外 npm 依赖。
