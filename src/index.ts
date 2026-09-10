@@ -14,8 +14,8 @@
 import { readdir, writeFile } from 'node:fs/promises'
 import { mountRpcChannel, type RpcChannelResult } from './rpc-channel.ts'
 
-/** 绝对路径校验：Windows 盘符或 UNC 前缀 */
-const ABS_RE = /^[A-Za-z]:[\\/]|^\\\\/
+/** 绝对路径校验：Windows 盘符、UNC 前缀或 POSIX 根路径 */
+const ABS_RE = /^[A-Za-z]:[\\/]|^\\\\|^\//
 
 /** 文件系统服务：仅用到解析、路径转换与读文本三个方法。 */
 interface FsService {
