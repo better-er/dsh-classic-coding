@@ -12,10 +12,8 @@
  */
 
 import { readdir, writeFile } from 'node:fs/promises'
+import { isAbsolute } from 'node:path'
 import { mountRpcChannel, type RpcChannelResult } from './rpc-channel.ts'
-
-/** 绝对路径校验：Windows 盘符、UNC 前缀或 POSIX 根路径 */
-const ABS_RE = /^[A-Za-z]:[\\/]|^\\\\|^\//
 
 /** 文件系统服务：仅用到解析、路径转换与读文本三个方法。 */
 interface FsService {
@@ -75,7 +73,7 @@ function requireAbsolute(path: unknown): asserts path is string {
   if (typeof path !== 'string' || path.length === 0) {
     throw new Error('path 必须是非空字符串')
   }
-  if (!ABS_RE.test(path)) {
+  if (!isAbsolute(path)) {
     throw new Error(`path 必须是绝对路径：收到 ${path}`)
   }
 }

@@ -117,7 +117,9 @@ check('readFile 内容', read.ok === true && read.value.content === '内容A', r
 const target = join(root, 'out.txt')
 const wrote = (await rpc('writeFile', { path: target, content: '写入成功' })).body.result
 check('writeFile 返回 ok', wrote.ok === true && wrote.value.ok === true, wrote)
-check('writeFile 落盘', (await readFile(target, 'utf8')) === '写入成功')
+let landed = false
+try { landed = (await readFile(target, 'utf8')) === '写入成功' } catch { landed = false }
+check('writeFile 落盘', landed)
 const wroteBad = (await rpc('writeFile', { path: target })).body.result
 check('writeFile 缺 content 报错', wroteBad.ok === false && /缺少 content/.test(wroteBad.error.message), wroteBad)
 
