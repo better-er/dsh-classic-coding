@@ -2,8 +2,8 @@
  * 古法编程 - Host 端
  *
  * 注册 RPC 端点，为 Client 端提供文件系统操作能力。
- * 经 ctx.connection.rpc.handle('/classic-coding', ...) 注册独立 RPC 通道：
- * /api 共享通道的唯一拦截器槽位已被官方 gateway 占用，插件端点必须走 handle 独立通道。
+ * 经 mountRpcChannel 直接向 webServer 自注册 /classic-coding 前缀路由，复用 connection 的信任判定，
+ * 实现官方 client-request/server-response 信封。共享通道 /api 的唯一拦截器槽位已被官方 gateway 占用。
  *
  * 官方 @deepseek-ai 服务面在此以最小结构接口描述，插件运行时由 host 注入真实实现，
  * 不引入任何官方类型包依赖，避免版本漂移。
@@ -12,6 +12,7 @@
  */
 
 import { readdir, writeFile } from 'node:fs/promises'
+import { mountRpcChannel } from './rpc-channel.ts'
 
 /** 绝对路径校验：Windows 盘符或 UNC 前缀 */
 const ABS_RE = /^[A-Za-z]:[\\/]|^\\\\/
@@ -36,26 +37,15 @@ interface SessionsService {
   get(sessionId: string): SessionRecord | undefined
 }
 
-/** 会话持久化：从磁盘冷读会话元数据。 */
+/** 会话持久化：按 id 冷读存储快照，只需要 header.cwd。 */
 interface SessionPersistenceService {
-  inspect(sessionId: string, signal?: AbortSignal): Promise<{ meta?: { cwd?: string } } | undefined>
+  stat(sessionId: string, options?: { signal?: AbortSignal }): Promise<{ header?: { cwd?: string } } | undefined>
 }
 
 /** RPC 响应：四象限消息模型下的统一结果信封。 */
 type RpcResult =
   | { ok: true; value: unknown }
-  | { ok: false; error: { code: string; message: string; details: unknown } }
-
-/** 连接服务：独立 RPC 通道注册。 */
-interface ConnectionService {
-  rpc: {
-    handle(
-      channel: string,
-      handler: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<RpcResult>,
-      options?: { authority?: string },
-    ): void
-  }
-}
+  | { ok: false; error: { code: string; message: string; details: object } }
 
 /** 插件上下文：apply 与 inject 回调共同可见的服务面。 */
 interface PluginContext {
@@ -63,7 +53,6 @@ interface PluginContext {
   inject(
     dependencies: string[],
     callback: (scope: PluginContext & {
-      connection: ConnectionService
       sessions: SessionsService
       sessionPersistence: SessionPersistenceService
     }) => void,
@@ -73,7 +62,7 @@ interface PluginContext {
 /** 插件名，即 cordis.yml 配置条目 id */
 const name = 'dsh-classic-coding'
 
-/** 依赖的服务：fs 即文件系统；connection、sessions、sessionPersistence 在 apply 内显式等待 */
+/** 依赖的服务：fs 即文件系统；sessions、sessionPersistence 在 apply 内显式等待 */
 const inject = ['fs']
 
 /** 需要隐藏的目录 */
@@ -110,48 +99,43 @@ function readString(record: Record<string, unknown>, key: string): string | unde
 /**
  * Host 端 apply：注册文件系统 RPC 端点。
  *
- * 用 ctx.inject(['connection', 'sessions', 'sessionPersistence'], ...) 延迟获取服务，
- * 再经 ctx.connection.rpc.handle 注册独立的 /classic-coding 通道。
- * 共享通道 /api 的唯一拦截器槽位已被官方 gateway 占用，尝试 intercept 会抛出
- * 'already has an interceptor'，因此插件端点必须走 handle 独立通道。
+ * 用 ctx.inject(['sessions', 'sessionPersistence'], ...) 延迟获取服务，
+ * 再经 mountRpcChannel 自注册独立的 /classic-coding 通道。
+ * dsh 0.1.5 的 connection.rpc.handle 在登记路由时解析 webServer 会抛 without inject，因此自行注册 prefix 路由。
  * @param ctx - 插件上下文。
  */
 function apply(ctx: PluginContext): void {
-  ctx.inject(['connection', 'sessions', 'sessionPersistence'], function (scope) {
-    scope.connection.rpc.handle(
-      '/classic-coding',
-      async function (endpoint, payload, signal): Promise<RpcResult> {
-        // handle 独立通道下 endpoint 即方法名，不含通道前缀
-        const method = endpoint
-        try {
-          switch (method) {
-            case 'describe':
-              return { ok: true, value: await handleDescribe(scope.sessions, scope.sessionPersistence, payload, signal) }
-            case 'listDir':
-              return { ok: true, value: await handleListDir(ctx, payload, signal) }
-            case 'readFile':
-              return { ok: true, value: await handleReadFile(ctx, payload) }
-            case 'writeFile':
-              return { ok: true, value: await handleWriteFile(payload) }
-            default:
-              return {
-                ok: false,
-                error: { code: 'bad-request', message: `未知端点: ${method}`, details: { issues: [] } },
-              }
-          }
-        } catch (e) {
-          return {
-            ok: false,
-            error: {
-              code: 'internal',
-              message: e instanceof Error ? e.message : String(e),
-              details: {},
-            },
-          }
+  ctx.inject(['sessions', 'sessionPersistence'], function (scope) {
+    mountRpcChannel(scope, '/classic-coding', async function (endpoint, payload, signal): Promise<RpcResult> {
+      // 独立通道下 endpoint 即方法名，不含通道前缀
+      const method = endpoint
+      try {
+        switch (method) {
+          case 'describe':
+            return { ok: true, value: await handleDescribe(scope.sessions, scope.sessionPersistence, payload, signal) }
+          case 'listDir':
+            return { ok: true, value: await handleListDir(ctx, payload, signal) }
+          case 'readFile':
+            return { ok: true, value: await handleReadFile(ctx, payload) }
+          case 'writeFile':
+            return { ok: true, value: await handleWriteFile(payload) }
+          default:
+            return {
+              ok: false,
+              error: { code: 'bad-request', message: `未知端点: ${method}`, details: { issues: [] } },
+            }
         }
-      },
-      { authority: 'trusted-host' },
-    )
+      } catch (e) {
+        return {
+          ok: false,
+          error: {
+            code: 'internal',
+            message: e instanceof Error ? e.message : String(e),
+            details: {},
+          },
+        }
+      }
+    })
   })
 }
 
@@ -161,7 +145,7 @@ function apply(ctx: PluginContext): void {
  *
  * 会话已挂载为 live 即内存 SessionStore 命中时直接取 header.cwd；
  * 否则，如浏览器刷新、会话尚未被 host resume 进 live 表时回退到
- * sessionPersistence.inspect 从磁盘冷读 meta.cwd。两者都拿不到才抛错，
+ * sessionPersistence.stat 从磁盘冷读快照 header.cwd。两者都拿不到才抛错，
  * 绝不静默回退到进程目录。
  * @param sessions - 会话服务。
  * @param sessionPersistence - 会话持久化服务。
@@ -185,8 +169,8 @@ async function handleDescribe(
   }
 
   // 兜底：从持久化冷读会话 header，覆盖刷新后尚未 resume 的会话
-  const inspection = await sessionPersistence.inspect(sessionId, signal)
-  const coldCwd = inspection?.meta?.cwd
+  const snapshot = await sessionPersistence.stat(sessionId, { signal })
+  const coldCwd = snapshot?.header?.cwd
   if (coldCwd) return { root: coldCwd }
   if (live) throw new Error(`会话 ${sessionId} 工作目录缺失：header.cwd 为空`)
   throw new Error(`会话不存在: ${sessionId}`)

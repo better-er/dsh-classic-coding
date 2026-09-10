@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import http from 'node:http'
 import vm from 'node:vm'
 
 let failed = 0
@@ -30,12 +31,15 @@ await writeFile(join(root, '.hidden'), 'x', 'utf8')
 await mkdir(join(root, 'sub'))
 await mkdir(join(root, 'node_modules'))
 
-let handler = null
-let handleOptions = null
+let routeHandler = null
+let rejection = undefined
 const scope = {
-  connection: { rpc: { handle(channel, h, options) { handler = h; handleOptions = { channel, options } } } },
+  connection: { requestRejection: () => rejection },
+  webServer: { register(route) { routeHandler = route.handler; return () => {} } },
+  effect(cb) { return cb() },
+  inject(deps, cb) { cb(scope) },
   sessions: { get: (id) => (id === 'live-1' ? { header: { cwd: root } } : id === 'live-empty' ? { header: {} } : undefined) },
-  sessionPersistence: { inspect: async (id) => (id === 'cold-1' ? { meta: { cwd: root } } : undefined) },
+  sessionPersistence: { stat: async (id) => (id === 'cold-1' ? { header: { cwd: root } } : undefined) },
 }
 const ctx = {
   fs: {
@@ -48,42 +52,67 @@ const ctx = {
 hostApply(ctx)
 
 console.log('[host] RPC 通道')
-check('注册通道', handleOptions !== null && handleOptions.channel === '/classic-coding', handleOptions)
-check('authority', handleOptions?.options?.authority === 'trusted-host', handleOptions?.options)
+check('注册 prefix 路由', routeHandler !== null)
+if (routeHandler === null) {
+  console.log('\n失败 ' + ++failed + ' 项')
+  process.exit(1)
+}
 
-const describeLive = await handler('describe', { sessionId: 'live-1' }, undefined)
+const server = http.createServer((req, res) => routeHandler(req, res))
+await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+const port = server.address().port
+
+/** 打一次本通道 RPC，返回 HTTP 状态与信封。 */
+async function rpc(method, payload) {
+  const res = await fetch('http://127.0.0.1:' + port + '/classic-coding/' + method, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'client-request', rpcId: 'smoke', method, payload }),
+  })
+  return { status: res.status, body: await res.json() }
+}
+
+const describeLive = (await rpc('describe', { sessionId: 'live-1' })).body.result
 check('describe live', describeLive.ok === true && describeLive.value.root === root, describeLive)
-const describeCold = await handler('describe', { sessionId: 'cold-1' }, undefined)
+const describeCold = (await rpc('describe', { sessionId: 'cold-1' })).body.result
 check('describe cold', describeCold.ok === true && describeCold.value.root === root, describeCold)
-const describeMiss = await handler('describe', { sessionId: 'nope' }, undefined)
+const describeMiss = (await rpc('describe', { sessionId: 'nope' })).body.result
 check('describe 未知会话报错', describeMiss.ok === false && /会话不存在/.test(describeMiss.error.message), describeMiss)
-const describeEmpty = await handler('describe', { sessionId: 'live-empty' }, undefined)
+const describeEmpty = (await rpc('describe', { sessionId: 'live-empty' })).body.result
 check('describe 空 cwd 报错', describeEmpty.ok === false && /工作目录缺失/.test(describeEmpty.error.message), describeEmpty)
-const describeNoId = await handler('describe', {}, undefined)
+const describeNoId = (await rpc('describe', {})).body.result
 check('describe 缺 sessionId 报错', describeNoId.ok === false && /缺少 sessionId/.test(describeNoId.error.message), describeNoId)
 
-const list = await handler('listDir', { path: root }, undefined)
+const list = (await rpc('listDir', { path: root })).body.result
 check('listDir 成功', list.ok === true, list)
 if (list.ok) {
   const names = list.value.entries.map((e) => e.name)
   check('listDir 过滤隐藏与 node_modules', names.join(',') === 'sub,a.txt,b.txt', names)
   check('listDir 目录优先', list.value.entries[0].type === 'directory', list.value.entries[0])
 }
-const listRel = await handler('listDir', { path: 'relative/x' }, undefined)
+const listRel = (await rpc('listDir', { path: 'relative/x' })).body.result
 check('listDir 拒绝相对路径', listRel.ok === false && /绝对路径/.test(listRel.error.message), listRel)
 
-const read = await handler('readFile', { path: join(root, 'a.txt') }, undefined)
+const read = (await rpc('readFile', { path: join(root, 'a.txt') })).body.result
 check('readFile 内容', read.ok === true && read.value.content === '内容A', read)
 
 const target = join(root, 'out.txt')
-const wrote = await handler('writeFile', { path: target, content: '写入成功' }, undefined)
+const wrote = (await rpc('writeFile', { path: target, content: '写入成功' })).body.result
 check('writeFile 返回 ok', wrote.ok === true && wrote.value.ok === true, wrote)
 check('writeFile 落盘', (await readFile(target, 'utf8')) === '写入成功')
-const wroteBad = await handler('writeFile', { path: target }, undefined)
+const wroteBad = (await rpc('writeFile', { path: target })).body.result
 check('writeFile 缺 content 报错', wroteBad.ok === false && /缺少 content/.test(wroteBad.error.message), wroteBad)
 
-const unknown = await handler('no-such', {}, undefined)
+const unknown = (await rpc('no-such', {})).body.result
 check('未知端点 bad-request', unknown.ok === false && unknown.error.code === 'bad-request', unknown)
+
+const notFound = await fetch('http://127.0.0.1:' + port + '/classic-coding/')
+check('空端点 404', notFound.status === 404, notFound.status)
+rejection = 401
+const unauth = await fetch('http://127.0.0.1:' + port + '/classic-coding/describe', { method: 'POST', body: '{}' })
+check('未授权 401', unauth.status === 401, unauth.status)
+rejection = undefined
+server.close()
 
 // ─── client 端 ─────────────────────────────────────────
 console.log('[client] 模块注册')
