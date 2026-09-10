@@ -50,6 +50,10 @@ jobs:
       - name: 构建
         run: pnpm build
 
+      # 冒烟测试消费构建产物，验证 host RPC 与 client 注册的行为契约。
+      - name: 冒烟测试
+        run: pnpm smoke
+
       # 出厂文件齐全性校验，缺失会在此失败，让 PR 作者一眼看到问题。
       - name: 产物齐全性校验
         run: |

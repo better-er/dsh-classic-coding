@@ -70,7 +70,7 @@ dsh plugin --profile web remove dsh-classic-coding
 
 - **标准形态**：dsh 客户端插件，声明 `dsh.client`、导出 `./client`。
 - **自挂载 bundle**：同时声明 `dsh.bundle`，用 `dsh plugin --profile web add` 从 GitHub 安装后自动识别为 profile layer 并挂载，无需手工写组合 entry。
-- **独立 RPC 通道**：Host 端经 `ctx.connection.rpc.handle('/classic-coding', ...)` 注册 `describe` / `listDir` / `readFile` / `writeFile` 四个端点，提供文件树与编辑器读写，底层走 DSH 内置 `ctx.fs` 文件系统服务。`/api` 共享通道的唯一拦截器槽位已被官方 gateway 占用，插件端点必须走 handle 独立通道。
+- **独立 RPC 通道**：Host 端经 `mountRpcChannel` 直接向 `webServer` 自注册 `/classic-coding` 前缀路由，复用 `connection.requestRejection` 做 Host 校验与浏览器鉴权，并实现官方 `client-request` / `server-response` 信封。dsh 0.1.5 的 `connection.rpc.handle` 在登记路由时解析 `webServer` 会抛 without inject，因此自行注册 prefix 路由。注册 `describe` / `listDir` / `readFile` / `writeFile` 四个端点，提供文件树与编辑器读写，底层走 DSH 内置 `ctx.fs` 文件系统服务。
 - **构建产物**：源码在 `src/`，用 tsdown 构建出 `lib/index.js`、`lib/index.d.ts` 与 `lib/client.js`。`lib/` 不入库，从 GitHub 安装时由 `prepare` 自动构建；本地开发跑 `pnpm install` 后 `pnpm build`，类型检查用 `pnpm typecheck`。`package.json` 声明 `dsh.client.platform: "web"`、`exports["./client"] → ./lib/client.js`。
 - **UI 挂载点**：`sidebar.footer.action` 触发按钮、`shell.overlay` 编辑器面板两个插槽注入。
 - **样式**：DSH 主题 CSS 变量 `--dsw-alias-*`，明暗主题自适应，`data-ds-dark-theme` 属性变化时实时跟随切换 Monaco 主题。

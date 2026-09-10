@@ -12,7 +12,7 @@
  */
 
 import { readdir, writeFile } from 'node:fs/promises'
-import { mountRpcChannel } from './rpc-channel.ts'
+import { mountRpcChannel, type RpcChannelResult } from './rpc-channel.ts'
 
 /** 绝对路径校验：Windows 盘符或 UNC 前缀 */
 const ABS_RE = /^[A-Za-z]:[\\/]|^\\\\/
@@ -41,11 +41,6 @@ interface SessionsService {
 interface SessionPersistenceService {
   stat(sessionId: string, options?: { signal?: AbortSignal }): Promise<{ header?: { cwd?: string } } | undefined>
 }
-
-/** RPC 响应：四象限消息模型下的统一结果信封。 */
-type RpcResult =
-  | { ok: true; value: unknown }
-  | { ok: false; error: { code: string; message: string; details: object } }
 
 /** 插件上下文：apply 与 inject 回调共同可见的服务面。 */
 interface PluginContext {
@@ -106,7 +101,7 @@ function readString(record: Record<string, unknown>, key: string): string | unde
  */
 function apply(ctx: PluginContext): void {
   ctx.inject(['sessions', 'sessionPersistence'], function (scope) {
-    mountRpcChannel(scope, '/classic-coding', async function (endpoint, payload, signal): Promise<RpcResult> {
+    mountRpcChannel(scope, '/classic-coding', async function (endpoint, payload, signal): Promise<RpcChannelResult> {
       // 独立通道下 endpoint 即方法名，不含通道前缀
       const method = endpoint
       try {

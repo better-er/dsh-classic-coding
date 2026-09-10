@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import http from 'node:http'
+import net from 'node:net'
 import vm from 'node:vm'
 
 let failed = 0
@@ -72,6 +73,23 @@ async function rpc(method, payload) {
   return { status: res.status, body: await res.json() }
 }
 
+/**
+ * 用原始 socket 只发请求头：超限 content-length 触发的是快速拒绝，没必要真发满整份 body。
+ */
+function rawRequest(port, head) {
+  return new Promise(function (resolve, reject) {
+    const socket = net.connect(port, '127.0.0.1')
+    let text = ''
+    socket.setEncoding('utf8')
+    socket.setTimeout(5000, function () { socket.destroy(); reject(new Error('raw request timeout')) })
+    socket.on('data', function (chunk) { text += chunk })
+    socket.on('end', function () { resolve(text) })
+    // 服务端先回 413 再 destroy，连接可能以 RST 收尾；只要已收到响应就交给断言判断。
+    socket.on('error', function (err) { if (text.length > 0) resolve(text); else reject(err) })
+    socket.write(head)
+  })
+}
+
 const describeLive = (await rpc('describe', { sessionId: 'live-1' })).body.result
 check('describe live', describeLive.ok === true && describeLive.value.root === root, describeLive)
 const describeCold = (await rpc('describe', { sessionId: 'cold-1' })).body.result
@@ -112,6 +130,14 @@ rejection = 401
 const unauth = await fetch('http://127.0.0.1:' + port + '/classic-coding/describe', { method: 'POST', body: '{}' })
 check('未授权 401', unauth.status === 401, unauth.status)
 rejection = undefined
+const plain = await fetch('http://127.0.0.1:' + port + '/classic-coding/describe', {
+  method: 'POST',
+  headers: { 'content-type': 'text/plain' },
+  body: '{}',
+})
+check('非 JSON content-type 返回 415', plain.status === 415, plain.status)
+const oversized = await rawRequest(port, 'POST /classic-coding/describe HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: ' + (400 * 1024 * 1024) + '\r\n\r\n')
+check('超限请求体返回 413', /^HTTP\/1\.1 413/.test(oversized), oversized.split('\r\n')[0])
 server.close()
 
 // ─── client 端 ─────────────────────────────────────────

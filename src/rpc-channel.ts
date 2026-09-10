@@ -51,13 +51,22 @@ interface Scope {
 
 /** 端点路径段的合法字符集，与官方 ENDPOINT_SEGMENT_PATTERN 一致。 */
 const SEGMENT = /^[A-Za-z0-9_$.-]+$/
-/** 请求体上限，RPC 信封远小于此值。 */
-const MAX_BODY_BYTES = 8 * 1024 * 1024
+/**
+ * 请求体上限，与官方 bridge 默认的 300MiB 对齐。
+ * 请求体是整份文件内容加 JSON 封装，原来的 8MiB 会让约 8MiB 的文件保存失败，
+ * 而 readFile 响应不限长，会出现能打开却保存不了的不一致。
+ */
+const MAX_BODY_BYTES = 300 * 1024 * 1024
+/** 唯一接受的 content-type，与官方信封契约一致。 */
+const JSON_MIME = 'application/json'
+
+/** 请求体超限的标记错误，由 serve 决定如何回写与断开。 */
+class PayloadTooLargeError extends Error {}
 
 /**
  * 挂载一条 RPC 通道。webServer 或 connection 缺席时不挂载，其余功能不受影响。
  * @param ctx - 插件上下文。
- * @param channel - 绝对通道前缀，例如 /dsh-pause。
+ * @param channel - 绝对通道前缀，例如 /classic-coding。
  * @param handler - 端点处理器。
  */
 export function mountRpcChannel(ctx: Injectable, channel: string, handler: RpcChannelHandler): void {
@@ -101,13 +110,22 @@ async function serve(
   if (!pathname.startsWith(prefix)) return missing(res)
   const endpoint = pathname.slice(prefix.length)
   if (!endpoint.split('/').every((part) => part !== '' && part !== '.' && part !== '..' && SEGMENT.test(part))) return missing(res)
+  if (!isJsonContentType(req)) {
+    res.writeHead(415)
+    res.end('unsupported media type')
+    return
+  }
+  // 声明了超限 content-length 时先快速拒绝，不必把整份超限请求读完。
+  const declared = Number(req.headers['content-length'])
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return tooLarge(req, res)
 
   let raw: string
   try {
     raw = await readBody(req)
   } catch (error) {
-    res.writeHead(413)
-    res.end('payload too large')
+    if (error instanceof PayloadTooLargeError) return tooLarge(req, res)
+    res.writeHead(400)
+    res.end('body read failed')
     return
   }
   let message: { type?: unknown; rpcId?: unknown; method?: unknown; payload?: unknown }
@@ -128,11 +146,17 @@ async function serve(
       error: { code: 'gateway/bad-request', message: `method ${JSON.stringify(message.method)} does not match endpoint ${JSON.stringify(endpoint)}`, details: {} },
     })
   }
+  // 客户端断开即取消，等价官方 bridge 传 request.signal 的语义。
+  const controller = new AbortController()
+  const onClose = (): void => { controller.abort(new Error('client disconnected')) }
+  res.on('close', onClose)
   let result: RpcChannelResult
   try {
-    result = await handler(endpoint, message.payload, new AbortController().signal)
+    result = await handler(endpoint, message.payload, controller.signal)
   } catch (error) {
     result = { ok: false, error: { code: 'internal', message: error instanceof Error ? error.message : String(error), details: {} } }
+  } finally {
+    res.off('close', onClose)
   }
   reply(res, rpcId, result)
 }
@@ -149,17 +173,29 @@ function reply(res: ServerResponse, rpcId: string, result: RpcChannelResult): vo
   res.end(JSON.stringify({ type: 'server-response', rpcId, result }))
 }
 
-/** 读取并限长请求体。 */
+/** 先回 413 再销毁连接：顺序反了 socket 已断，413 永远发不出去。 */
+function tooLarge(req: IncomingMessage, res: ServerResponse): void {
+  res.writeHead(413, { connection: 'close' })
+  res.end('payload too large')
+  req.destroy()
+}
+
+/** content-type 必须声明为 application/json，charset 等参数可忽略。 */
+function isJsonContentType(req: IncomingMessage): boolean {
+  const header = req.headers['content-type']
+  if (typeof header !== 'string') return false
+  const mime = header.split(';', 1)[0]
+  return mime !== undefined && mime.trim().toLowerCase() === JSON_MIME
+}
+
+/** 读取并限长请求体，超限抛 PayloadTooLargeError，由调用方回写 413。 */
 async function readBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
     const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk as Buffer
     size += buffer.length
-    if (size > MAX_BODY_BYTES) {
-      req.destroy()
-      throw new Error('rpc channel: request body exceeds limit')
-    }
+    if (size > MAX_BODY_BYTES) throw new PayloadTooLargeError('rpc channel: request body exceeds limit')
     chunks.push(buffer)
   }
   return Buffer.concat(chunks).toString('utf8')
