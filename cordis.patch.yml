@@ -1,8 +1,7 @@
-# dsh-classic-coding bundle patch: mount the classic-coding plugin.
-#
-# Applied when this bundle appears in a profile's dsh.profile.bundles list.
-# The node half (package root) registers RPC endpoints for file system operations;
-# the browser half (dsh.client) provides the Monaco editor + file tree overlay panel.
+# dsh-classic-coding bundle patch：把 classic-coding 插件插进 profile 的 layer stack。
+# 当本 bundle 出现在 profile 的 dsh.profile.bundles 列表里时应用。
+# 主机端半身注册文件系统操作的 RPC 端点。
+# 浏览器半身提供 Monaco 编辑器与文件树浮层面板。
 
 - insert:
     - id: dsh-classic-coding

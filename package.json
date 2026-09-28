@@ -1,7 +1,7 @@
 {
   "name": "dsh-classic-coding",
-  "version": "0.2.1",
-  "description": "古法编程：在 DSH Web UI 中提供 Monaco 编辑器 + 文件树覆盖层面板",
+  "version": "0.2.2",
+  "description": "「DSH·古法编程」：在 DSH Web UI 中提供 Monaco 编辑器 + 文件树覆盖层面板",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -11,6 +11,9 @@
     "monaco"
   ],
   "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=26.3.1"
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -49,6 +52,9 @@
     "prepare": "tsdown",
     "typecheck": "tsc --noEmit",
     "smoke": "node smoke/verify.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "^0.1.7-rc.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
