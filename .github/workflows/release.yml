@@ -104,14 +104,15 @@ jobs:
         if: steps.published.outputs.published != 'true'
         run: pnpm typecheck
 
-      # 编辑器面板与文件树的加载路径走冒烟脚本，单独跑一遍。
-      - name: Smoke
-        if: steps.published.outputs.published != 'true'
-        run: pnpm smoke
-
       - name: Build
         if: steps.published.outputs.published != 'true'
         run: pnpm build
+
+      # 编辑器面板与文件树的加载路径走冒烟脚本，单独跑一遍。
+      # 冒烟脚本直接 import lib/ 产物，必须排在 Build 之后。
+      - name: Smoke
+        if: steps.published.outputs.published != 'true'
+        run: pnpm smoke
 
       # 本插件是双半身且带 sourcemap，产物缺失会在此失败。
       - name: Verify build outputs
