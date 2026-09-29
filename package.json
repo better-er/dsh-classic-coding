@@ -1,7 +1,7 @@
 {
   "name": "dsh-classic-coding",
-  "version": "0.2.2",
-  "description": "「DSH·古法编程」：在 DSH Web UI 中提供 Monaco 编辑器 + 文件树覆盖层面板",
+  "version": "0.2.3",
+  "description": "「DSH·古法编程」：在 DSH Web UI 右侧栏用 Monaco 编辑器打开工作区代码文件",
   "keywords": [
     "deepseek-harness",
     "dsh",

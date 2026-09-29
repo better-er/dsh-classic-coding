@@ -1,11 +1,11 @@
 /**
- * 产物冒烟验证：host 端 RPC 行为 + client 端模块注册。
+ * 产物冒烟验证：host 端保存端点 + client 端 tab 类型注册。
  *
  * 前置：先执行 pnpm build 生成 lib/，本脚本直接消费构建产物。
  * 用法：pnpm smoke
  */
 import { apply as hostApply, name as hostName, inject as hostInject } from '../lib/index.js'
-import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises'
+import { mkdtemp, writeFile, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
@@ -23,14 +23,9 @@ function check(label, cond, extra) {
 // ─── host 端 ───────────────────────────────────────────
 console.log('[host] 导出面')
 check('name', hostName === 'dsh-classic-coding', hostName)
-check('inject', Array.isArray(hostInject) && hostInject.join(',') === 'fs', hostInject)
+check('inject 为空，读写交给内置与自注册通道', Array.isArray(hostInject) && hostInject.length === 0, hostInject)
 
 const root = await mkdtemp(join(tmpdir(), 'cc-verify-'))
-await writeFile(join(root, 'b.txt'), '内容B', 'utf8')
-await writeFile(join(root, 'a.txt'), '内容A', 'utf8')
-await writeFile(join(root, '.hidden'), 'x', 'utf8')
-await mkdir(join(root, 'sub'))
-await mkdir(join(root, 'node_modules'))
 
 let routeHandler = null
 let rejection = undefined
@@ -39,15 +34,8 @@ const scope = {
   webServer: { register(route) { routeHandler = route.handler; return () => {} } },
   effect(cb) { return cb() },
   inject(deps, cb) { cb(scope) },
-  sessions: { get: (id) => (id === 'live-1' ? { header: { cwd: root } } : id === 'live-empty' ? { header: {} } : undefined) },
-  sessionPersistence: { stat: async (id) => (id === 'cold-1' ? { header: { cwd: root } } : undefined) },
 }
 const ctx = {
-  fs: {
-    resolve: async (p) => p,
-    processPath: (t) => t,
-    readText: async (t) => readFile(t, 'utf8'),
-  },
   inject(deps, cb) { cb(scope) },
 }
 hostApply(ctx)
@@ -90,30 +78,6 @@ function rawRequest(port, head) {
   })
 }
 
-const describeLive = (await rpc('describe', { sessionId: 'live-1' })).body.result
-check('describe live', describeLive.ok === true && describeLive.value.root === root, describeLive)
-const describeCold = (await rpc('describe', { sessionId: 'cold-1' })).body.result
-check('describe cold', describeCold.ok === true && describeCold.value.root === root, describeCold)
-const describeMiss = (await rpc('describe', { sessionId: 'nope' })).body.result
-check('describe 未知会话报错', describeMiss.ok === false && /会话不存在/.test(describeMiss.error.message), describeMiss)
-const describeEmpty = (await rpc('describe', { sessionId: 'live-empty' })).body.result
-check('describe 空 cwd 报错', describeEmpty.ok === false && /工作目录缺失/.test(describeEmpty.error.message), describeEmpty)
-const describeNoId = (await rpc('describe', {})).body.result
-check('describe 缺 sessionId 报错', describeNoId.ok === false && /缺少 sessionId/.test(describeNoId.error.message), describeNoId)
-
-const list = (await rpc('listDir', { path: root })).body.result
-check('listDir 成功', list.ok === true, list)
-if (list.ok) {
-  const names = list.value.entries.map((e) => e.name)
-  check('listDir 过滤隐藏与 node_modules', names.join(',') === 'sub,a.txt,b.txt', names)
-  check('listDir 目录优先', list.value.entries[0].type === 'directory', list.value.entries[0])
-}
-const listRel = (await rpc('listDir', { path: 'relative/x' })).body.result
-check('listDir 拒绝相对路径', listRel.ok === false && /绝对路径/.test(listRel.error.message), listRel)
-
-const read = (await rpc('readFile', { path: join(root, 'a.txt') })).body.result
-check('readFile 内容', read.ok === true && read.value.content === '内容A', read)
-
 const target = join(root, 'out.txt')
 const wrote = (await rpc('writeFile', { path: target, content: '写入成功' })).body.result
 check('writeFile 返回 ok', wrote.ok === true && wrote.value.ok === true, wrote)
@@ -122,6 +86,11 @@ try { landed = (await readFile(target, 'utf8')) === '写入成功' } catch { lan
 check('writeFile 落盘', landed)
 const wroteBad = (await rpc('writeFile', { path: target })).body.result
 check('writeFile 缺 content 报错', wroteBad.ok === false && /缺少 content/.test(wroteBad.error.message), wroteBad)
+const wroteRel = (await rpc('writeFile', { path: 'relative/x.txt', content: 'x' })).body.result
+check('writeFile 拒绝相对路径', wroteRel.ok === false && /绝对路径/.test(wroteRel.error.message), wroteRel)
+
+const removed = (await rpc('describe', { sessionId: 'x' })).body.result
+check('已下线的 describe 报 bad-request', removed.ok === false && removed.error.code === 'bad-request', removed)
 
 const unknown = (await rpc('no-such', {})).body.result
 check('未知端点 bad-request', unknown.ok === false && unknown.error.code === 'bad-request', unknown)
@@ -129,16 +98,16 @@ check('未知端点 bad-request', unknown.ok === false && unknown.error.code ===
 const notFound = await fetch('http://127.0.0.1:' + port + '/classic-coding/')
 check('空端点 404', notFound.status === 404, notFound.status)
 rejection = 401
-const unauth = await fetch('http://127.0.0.1:' + port + '/classic-coding/describe', { method: 'POST', body: '{}' })
+const unauth = await fetch('http://127.0.0.1:' + port + '/classic-coding/writeFile', { method: 'POST', body: '{}' })
 check('未授权 401', unauth.status === 401, unauth.status)
 rejection = undefined
-const plain = await fetch('http://127.0.0.1:' + port + '/classic-coding/describe', {
+const plain = await fetch('http://127.0.0.1:' + port + '/classic-coding/writeFile', {
   method: 'POST',
   headers: { 'content-type': 'text/plain' },
   body: '{}',
 })
 check('非 JSON content-type 返回 415', plain.status === 415, plain.status)
-const oversized = await rawRequest(port, 'POST /classic-coding/describe HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: ' + (400 * 1024 * 1024) + '\r\n\r\n')
+const oversized = await rawRequest(port, 'POST /classic-coding/writeFile HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: ' + (400 * 1024 * 1024) + '\r\n\r\n')
 check('超限请求体返回 413', /^HTTP\/1\.1 413/.test(oversized), oversized.split('\r\n')[0])
 server.close()
 
@@ -147,7 +116,6 @@ console.log('[client] 模块注册')
 const code = readFileSync(fileURLToPath(new URL('../lib/client.js', import.meta.url)), 'utf8')
 let entry = null
 let styleAppended = 0
-let observerCount = 0
 const fakeElement = () => ({
   dataset: {}, className: '', title: '', textContent: '',
   appendChild() {}, hasAttribute: () => false, setAttribute() {},
@@ -157,18 +125,12 @@ const documentMock = {
   head: { appendChild() { styleAppended++ } },
   body: { hasAttribute: () => false },
   createElement: fakeElement,
-  createTextNode: () => ({}),
   addEventListener() {}, removeEventListener() {},
   querySelectorAll: () => [],
 }
-class MutationObserverMock {
-  constructor() { observerCount++ }
-  observe() {}
-  disconnect() {}
-}
 const windowMock = { __ModuleLoader__: { load(e) { entry = e } } }
 const sandbox = {
-  window: windowMock, document: documentMock, MutationObserver: MutationObserverMock,
+  window: windowMock, document: documentMock,
   fetch: () => Promise.reject(new Error('不该调用 fetch')),
   console, setTimeout, clearTimeout, setInterval, clearInterval, Promise, JSON, Object, Symbol, Error, RegExp, String, Number, Array,
 }
@@ -189,39 +151,63 @@ const mod = entry.factory((id) => {
 })
 check('默认导出为插件', mod.default && mod.default.name === 'dsh-classic-coding', mod.default && mod.default.name)
 check('具名导出 apply', typeof mod.apply === 'function')
-check('具名导出 inject', Array.isArray(mod.inject) && mod.inject.join(',') === 'slots,sessions', mod.inject)
+check('具名导出 inject', Array.isArray(mod.inject) && mod.inject.join(',') === 'slots,sidebarRightTabs,sidebarRight,remote,remote.workspaceFiles', mod.inject)
 
 const injections = []
 const registrations = []
-let effectFn = null
+const typeDefinitions = []
+let effectCount = 0
 const clientCtx = {
   get(service) {
     if (service === 'slots') return {
       inject(n, cb) { injections.push(n); cb() },
       register(opts, comp) { registrations.push({ opts, comp }); return () => {} },
     }
-    if (service === 'sessions') return { list: { getSnapshot: () => ({ current: 'live-1' }) } }
+    if (service === 'sidebarRightTabs') return {
+      register(def) { typeDefinitions.push(def); return () => {} },
+    }
+    if (service === 'sidebarRight') return { openResource() {}, active() { return undefined } }
+    if (service === 'remote') return { workspaceFiles: { readBytes: async () => ({ absolutePath: 'C:/x/a.ts', version: 'v', offset: 0, data: new Uint8Array(), eof: true }) } }
     return undefined
   },
-  effect(cb) { effectFn = cb },
+  effect(cb) { effectCount++; cb() },
 }
 mod.apply(clientCtx)
-check('注入两个槽位', injections.join(',') === 'sidebar.footer.action,shell.overlay', injections)
-check('注册两个组件', registrations.length === 2, registrations.map((r) => r.opts.id))
-check('触发按钮 order 15', registrations[0]?.opts.order === 15, registrations[0]?.opts)
-check('effect 已注册', typeof effectFn === 'function')
-if (typeof effectFn === 'function') {
-  const dispose = effectFn()
-  check('样式已注入', styleAppended === 1, styleAppended)
-  check('尾巴 observer 已启动', observerCount === 1, observerCount)
-  check('effect 返回清理函数', typeof dispose === 'function')
-  dispose()
-  check('清理后移除样式', documentMock.head !== null)
+check('注入正文与文档动作席位', injections.join(',') === 'sidebar.right.pane.tab,sidebar.right.tab.document.actions', injections)
+check('注册两个组件', registrations.length === 2, registrations.map((r) => r.opts.key || r.opts.id))
+check('正文席位 key 与类型 id 一致', registrations[0]?.opts.key === 'dsh-classic-coding', registrations[0]?.opts)
+check('文档动作席位 id', registrations[1]?.opts.id === 'dsh-classic-coding-edit', registrations[1]?.opts)
+check('注册一个 tab 类型', typeDefinitions.length === 1, typeDefinitions)
+const def = typeDefinitions[0]
+if (def) {
+  check('类型 id', def.id === 'dsh-classic-coding', def.id)
+  check('类型 kind', def.kind === 'code', def.kind)
+  check('类型优先级 extension', def.priority === 'extension', def.priority)
+  check('类型保活', def.keepMounted === true, def.keepMounted)
+  check('不参与自动认领，默认走内置查看', def.patterns === undefined, def.patterns)
+  check('只认领会话地址', def.canOpen('dsh-resource://file/session/s1/a.ts') === true && def.canOpen('dsh-resource://file/absolute/C:/a.ts') === false)
+  check('标题取文件名', def.title('dsh-resource://file/session/s1/dir/a.ts') === 'a.ts', def.title('dsh-resource://file/session/s1/dir/a.ts'))
 }
-for (const r of registrations) {
-  const el = r.comp()
-  check('组件可渲染 ' + r.opts.id, el && typeof el === 'object', el)
+check('effect 已注册', effectCount === 2, effectCount)
+
+const bodyProps = {
+  useTabInfo: () => ({
+    tab: {
+      navigation: { address: 'dsh-resource://file/session/s1/dir/a.ts' },
+      signal: new AbortController().signal,
+    },
+  }),
 }
+const el = registrations[0]?.comp(bodyProps)
+check('正文可渲染', el && typeof el === 'object', el && el.type)
+const suspicious = registrations[0]?.comp({
+  useTabInfo: () => ({ tab: { navigation: { address: 'sidebar://code' }, signal: new AbortController().signal } }),
+})
+check('非文件地址落到错误提示', suspicious && typeof suspicious === 'object', suspicious && suspicious.type)
+const action = registrations[1]?.comp({ absolutePath: 'C:\\CCC_nospace\\x\\a.ts', sessionId: 's1' })
+check('文档动作图标可渲染', action && typeof action === 'object', action && action.type)
+const actionNoSession = registrations[1]?.comp({ absolutePath: 'C:\\x\\a.ts' })
+check('无会话时仍可点击，地址在点击时兜底', actionNoSession && actionNoSession.props.disabled === undefined, actionNoSession && actionNoSession.props)
 
 console.log(failed === 0 ? '\n全部通过' : '\n失败 ' + failed + ' 项')
 process.exit(failed === 0 ? 0 : 1)
