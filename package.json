@@ -1,6 +1,6 @@
 {
   "name": "dsh-classic-coding",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "「DSH·古法编程」：在 DSH Web UI 右侧栏用 Monaco 编辑器打开工作区代码文件",
   "keywords": [
     "deepseek-harness",
@@ -54,7 +54,7 @@
     "smoke": "node smoke/verify.mjs"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "^0.1.7-rc.2"
+    "@deepseek-ai/dsh": "^0.2.0-rc.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
