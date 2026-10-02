@@ -1,10 +1,8 @@
 /**
  * 在 webServer 上自注册一条 connection 风格的 RPC 通道。
  *
- * dsh 0.1.5 的 connection.rpc.handle 会在登记路由时解析 webServer，实测任何插件上下文都抛
- * `cannot get property "webServer" without inject`，官方自身也从不走该路径。
- * 因此这里直接向 webServer 注册 prefix 路由，复用 connection.requestRejection 的
- * Host 校验与浏览器鉴权，并实现同样的 client-request/server-response 信封。
+ * dsh 0.1.5 的 connection.rpc.handle 会在登记路由时解析 webServer，实测任何插件上下文都抛 `cannot get property "webServer" without inject`，官方自身也从不走该路径。
+ * 因此这里直接向 webServer 注册 prefix 路由，复用 connection.requestRejection 的 Host 校验与浏览器鉴权，并实现同样的 client-request/server-response 信封。
  *
  * @module dsh-classic-coding/rpc-channel
  */
