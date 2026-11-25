@@ -151,11 +151,10 @@ const mod = entry.factory((id) => {
 })
 check('默认导出为插件', mod.default && mod.default.name === 'dsh-classic-coding', mod.default && mod.default.name)
 check('具名导出 apply', typeof mod.apply === 'function')
-check('具名导出 inject', Array.isArray(mod.inject) && mod.inject.join(',') === 'slots,sidebarRightTabs,sidebarRight,remote,remote.workspaceFiles', mod.inject)
+check('具名导出 inject', Array.isArray(mod.inject) && mod.inject.join(',') === 'slots,remote,remote.workspaceFiles', mod.inject)
 
 const injections = []
 const registrations = []
-const typeDefinitions = []
 let effectCount = 0
 const clientCtx = {
   get(service) {
@@ -163,51 +162,31 @@ const clientCtx = {
       inject(n, cb) { injections.push(n); cb() },
       register(opts, comp) { registrations.push({ opts, comp }); return () => {} },
     }
-    if (service === 'sidebarRightTabs') return {
-      register(def) { typeDefinitions.push(def); return () => {} },
+    if (service === 'remote') return {
+      workspaceFiles: {
+        async readBytes() {
+          return { absolutePath: 'C:/x/a.ts', version: 'v', offset: 0, data: new TextEncoder().encode('const a = 1\n'), eof: true }
+        },
+      },
     }
-    if (service === 'sidebarRight') return { openResource() {}, active() { return undefined } }
-    if (service === 'remote') return { workspaceFiles: { readBytes: async () => ({ absolutePath: 'C:/x/a.ts', version: 'v', offset: 0, data: new Uint8Array(), eof: true }) } }
     return undefined
   },
   effect(cb) { effectCount++; cb() },
 }
 mod.apply(clientCtx)
-check('注入正文与文档动作席位', injections.join(',') === 'sidebar.right.pane.tab,sidebar.right.tab.document.actions', injections)
-check('注册两个组件', registrations.length === 2, registrations.map((r) => r.opts.key || r.opts.id))
-check('正文席位 key 与类型 id 一致', registrations[0]?.opts.key === 'dsh-classic-coding', registrations[0]?.opts)
-check('文档动作席位 id', registrations[1]?.opts.id === 'dsh-classic-coding-edit', registrations[1]?.opts)
-check('注册一个 tab 类型', typeDefinitions.length === 1, typeDefinitions)
-const def = typeDefinitions[0]
-if (def) {
-  check('类型 id', def.id === 'dsh-classic-coding', def.id)
-  check('类型 kind', def.kind === 'code', def.kind)
-  check('类型优先级 extension', def.priority === 'extension', def.priority)
-  check('类型保活', def.keepMounted === true, def.keepMounted)
-  check('不参与自动认领，默认走内置查看', def.patterns === undefined, def.patterns)
-  check('只认领会话地址', def.canOpen('dsh-resource://file/session/s1/a.ts') === true && def.canOpen('dsh-resource://file/absolute/C:/a.ts') === false)
-  check('标题取文件名', def.title('dsh-resource://file/session/s1/dir/a.ts') === 'a.ts', def.title('dsh-resource://file/session/s1/dir/a.ts'))
-}
-check('effect 已注册', effectCount === 2, effectCount)
+check('只注入文档动作席位', injections.join(',') === 'sidebar.right.tab.document.action,sidebar.right.tab.document.action', injections)
+check('注册两个渲染器', registrations.length === 2, registrations.map((r) => r.opts.key))
+check('按键分别挂到代码与纯文本渲染器', /\/code$/.test(registrations[0]?.opts.key) && /\/text$/.test(registrations[1]?.opts.key), registrations.map((r) => r.opts.key))
+check('注册项 id 互不相同', registrations[0]?.opts.id !== registrations[1]?.opts.id, registrations.map((r) => r.opts.id))
+check('effect 已注册', effectCount === 3, effectCount)
 
-const bodyProps = {
-  useTabInfo: () => ({
-    tab: {
-      navigation: { address: 'dsh-resource://file/session/s1/dir/a.ts' },
-      signal: new AbortController().signal,
-    },
-  }),
-}
-const el = registrations[0]?.comp(bodyProps)
-check('正文可渲染', el && typeof el === 'object', el && el.type)
-const suspicious = registrations[0]?.comp({
-  useTabInfo: () => ({ tab: { navigation: { address: 'sidebar://code' }, signal: new AbortController().signal } }),
+const action = registrations[0]?.comp({
+  content: { kind: 'text', eof: true },
+  useTabInfo: () => ({ tab: { contentId: 'dsh-resource://file/session/s1/a.ts', signal: new AbortController().signal } }),
 })
-check('非文件地址落到错误提示', suspicious && typeof suspicious === 'object', suspicious && suspicious.type)
-const action = registrations[1]?.comp({ absolutePath: 'C:\\CCC_nospace\\x\\a.ts', sessionId: 's1' })
-check('文档动作图标可渲染', action && typeof action === 'object', action && action.type)
-const actionNoSession = registrations[1]?.comp({ absolutePath: 'C:\\x\\a.ts' })
-check('无会话时仍可点击，地址在点击时兜底', actionNoSession && actionNoSession.props.disabled === undefined, actionNoSession && actionNoSession.props)
+check('修改按键可渲染', action && action.type === 'button', action && action.type)
+check('未编辑时提示修改文件', action && action.props.title === '古法编程：修改文件', action && action.props.title)
+check('按键初始未按下', action && action.props['aria-pressed'] === false, action && action.props['aria-pressed'])
 
 console.log(failed === 0 ? '\n全部通过' : '\n失败 ' + failed + ' 项')
 process.exit(failed === 0 ? 0 : 1)
