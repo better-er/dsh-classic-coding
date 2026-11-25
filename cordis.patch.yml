@@ -1,7 +1,7 @@
 # dsh-classic-coding bundle patch：把 classic-coding 插件插进 profile 的 layer stack。
 # 当本 bundle 出现在 profile 的 dsh.profile.bundles 列表里时应用。
-# 主机端半身注册文件系统操作的 RPC 端点。
-# 浏览器半身提供 Monaco 编辑器与文件树浮层面板。
+# 主机端半身注册写文件的 RPC 端点。
+# 浏览器半身在内置文档预览的工具栏加一个切换修改模式的按键。
 
 - insert:
     - id: dsh-classic-coding

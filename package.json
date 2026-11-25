@@ -1,14 +1,14 @@
 {
   "name": "dsh-classic-coding",
-  "version": "0.2.4",
-  "description": "「DSH·古法编程」：在 DSH Web UI 右侧栏用 Monaco 编辑器打开工作区代码文件",
+  "version": "0.3.0",
+  "description": "「DSH·古法编程」：在 DSH Web UI 内置文件预览里切换修改模式，直接编辑并保存工作区文本",
   "keywords": [
     "deepseek-harness",
     "dsh",
     "dsh-plugin",
     "coding",
-    "editor",
-    "monaco"
+    "file-preview",
+    "editor"
   ],
   "packageManager": "pnpm@9.15.9",
   "engines": {
@@ -45,12 +45,13 @@
     "lib/client.js",
     "lib/client.js.map",
     "cordis.patch.yml",
-    "docs/"
+    "assets/"
   ],
   "scripts": {
     "build": "tsdown",
     "prepare": "tsdown",
     "typecheck": "tsc --noEmit",
+    "test": "node smoke/verify.mjs && node smoke/editing.mjs",
     "smoke": "node smoke/verify.mjs"
   },
   "peerDependencies": {
@@ -59,6 +60,9 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/react": "~18.3.1",
+    "happy-dom": "^21.0.4",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
     "tsdown": "^0.23.0",
     "typescript": "^5.9.3"
   },
