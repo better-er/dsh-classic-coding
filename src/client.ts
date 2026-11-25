@@ -157,7 +157,7 @@ const CSS = [
   '.dsh-cc-conflict-actions{display:flex;justify-content:flex-end;gap:8px}',
   '.dsh-cc-conflict-action{height:28px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-primary);font-family:inherit;font-size:12px;line-height:1;cursor:pointer}',
   '.dsh-cc-conflict-action:hover{background:var(--dsw-alias-interactive-bg-hover)}',
-  '.dsh-cc-conflict-action[data-choice="yes"]{border-color:transparent;background:var(--dsw-alias-interactive-bg-hover);font-weight:600}',
+  '.dsh-cc-conflict-primary{border-color:transparent;background:var(--dsw-alias-interactive-bg-hover);font-weight:600}',
 ].join('\n')
 
 /** 插件样式表元素，随插件生命周期存在。 */
@@ -217,6 +217,10 @@ interface EditSession {
   onSync: () => void
   /** 编辑期间的按键监听，退出时移除。 */
   onKeyDown: (event: KeyboardEvent) => void
+  /** 切到别的标签页时触发，由组件挂上处理函数。 */
+  onAway: () => void
+  /** 已切走并询问过，避免轮询重复弹窗。 */
+  away: boolean
   /** 已关闭，避免重复清理。 */
   closed: boolean
 }
@@ -362,6 +366,25 @@ function syncClip(session: EditSession): void {
 }
 
 /**
+ * 本文件所在标签页是否已不是当前活动页；页面没有标签页结构时一律当作仍在编辑。
+ * @param session - 当前会话。
+ */
+function isAway(session: EditSession): boolean {
+  const name = session.address.split('/').pop() ?? ''
+  if (name === '') return false
+  const tabs = Array.from(document.querySelectorAll<HTMLElement>('[role="tab"]'))
+  if (tabs.length === 0) return false
+  const own = tabs.find(function (tab): boolean {
+    return (tab.textContent ?? '').includes(name)
+  })
+  if (own !== undefined) return own.getAttribute('aria-selected') !== 'true'
+  const selected = tabs.filter(function (tab): boolean {
+    return tab.getAttribute('aria-selected') === 'true'
+  })
+  return selected.length > 0
+}
+
+/**
  * 把光标放到可见区域的第一行，不放文件开头。
  * 浏览器会为选区自动滚动，光标留在文件开头时滚动位置会被拉回顶部，看起来像跳了一下。
  * @param clip - 编辑区容器。
@@ -387,6 +410,17 @@ function placeCaretAtVisibleStart(clip: HTMLElement, clone: HTMLElement): void {
  */
 function trackClip(session: EditSession): void {
   const sync = function (): void {
+    // 切到别的标签页时把编辑区藏起来，并按「无修改直接退出、有修改问用户」处理。
+    if (isAway(session)) {
+      session.clip.style.display = 'none'
+      if (!session.away) {
+        session.away = true
+        session.onAway()
+      }
+      return
+    }
+    session.away = false
+    session.clip.style.display = ''
     const current = editableHost(currentRoot(session)) ?? session.host
     if (current !== session.host) {
       // 预览重渲染换掉了正文节点：新节点照旧隐藏，编辑仍在克隆上进行。
@@ -550,6 +584,8 @@ function openSession(
     timer: 0,
     onSync: function (): void {},
     onKeyDown: function (): void {},
+    onAway: function (): void {},
+    away: false,
     closed: false,
   }
   clone.setAttribute('contenteditable', 'plaintext-only')
@@ -634,7 +670,17 @@ function EditAction(props: DocumentActionProps): React.ReactElement {
    * 文件被外部改动时问用户：覆盖保存、回到编辑，还是放弃本地修改。
    * @returns 用户的选择。
    */
-  function askOverwrite(): Promise<'overwrite' | 'cancel' | 'discard'> {
+  /**
+   * 弹出带若干按钮的选择框，返回所选值。
+   * @param titleText - 标题。
+   * @param bodyText - 说明文字。
+   * @param choices - 按钮与返回值。
+   */
+  function showChoice(
+    titleText: string,
+    bodyText: string,
+    choices: Array<{ label: string; value: string; primary: boolean }>,
+  ): Promise<string> {
     return new Promise(function (resolve): void {
       const mask = document.createElement('div')
       mask.className = 'dsh-cc-conflict-mask'
@@ -643,42 +689,75 @@ function EditAction(props: DocumentActionProps): React.ReactElement {
       panel.className = 'dsh-cc-conflict'
       panel.setAttribute('role', 'dialog')
       panel.setAttribute('aria-modal', 'true')
-      panel.setAttribute('aria-label', '文件已被其他程序修改')
+      panel.setAttribute('aria-label', titleText)
       const title = document.createElement('p')
       title.className = 'dsh-cc-conflict-title'
-      title.textContent = '文件已被其他程序修改'
+      title.textContent = titleText
       const text = document.createElement('p')
       text.className = 'dsh-cc-conflict-text'
-      text.textContent = '继续保存会覆盖对方的修改。要覆盖吗？'
+      text.textContent = bodyText
       const actions = document.createElement('div')
       actions.className = 'dsh-cc-conflict-actions'
-      const close = function (choice: 'overwrite' | 'cancel' | 'discard'): void {
+      const close = function (value: string): void {
         mask.remove()
-        resolve(choice)
+        resolve(value)
       }
-      const add = function (label: string, choice: 'overwrite' | 'cancel' | 'discard'): void {
+      for (const choice of choices) {
         const button = document.createElement('button')
         button.type = 'button'
-        button.className = 'dsh-cc-conflict-action'
-        button.dataset.choice = choice === 'overwrite' ? 'yes' : choice
-        button.textContent = label
-        button.addEventListener('click', function (): void { close(choice) })
+        button.className = choice.primary ? 'dsh-cc-conflict-action dsh-cc-conflict-primary' : 'dsh-cc-conflict-action'
+        button.dataset.choice = choice.value
+        button.textContent = choice.label
+        button.addEventListener('click', function (): void { close(choice.value) })
         actions.append(button)
       }
-      add('是', 'overwrite')
-      add('否', 'cancel')
-      add('放弃修改', 'discard')
       panel.append(title, text, actions)
       mask.append(panel)
       mask.addEventListener('keydown', function (event: KeyboardEvent): void {
         if (event.key !== 'Escape') return
         event.preventDefault()
-        close('cancel')
+        const last = choices[choices.length - 1]
+        if (last !== undefined) close(last.value)
       })
       document.body.append(mask)
       const first = actions.firstElementChild
       if (first instanceof HTMLElement) first.focus()
     })
+  }
+
+  function askOverwrite(): Promise<'overwrite' | 'cancel' | 'discard'> {
+    return showChoice('文件已被其他程序修改', '继续保存会覆盖对方的修改。要覆盖吗？', [
+      { label: '是', value: 'overwrite', primary: true },
+      { label: '否', value: 'cancel', primary: false },
+      { label: '放弃修改', value: 'discard', primary: false },
+    ]).then(function (value): 'overwrite' | 'cancel' | 'discard' {
+      return value as 'overwrite' | 'cancel' | 'discard'
+    })
+  }
+
+  function askAway(): Promise<'save' | 'discard' | 'keep'> {
+    return showChoice('文件有未保存的修改', '离开修改模式前要保存吗？', [
+      { label: '保存', value: 'save', primary: true },
+      { label: '放弃', value: 'discard', primary: false },
+      { label: '保留', value: 'keep', primary: false },
+    ]).then(function (value): 'save' | 'discard' | 'keep' {
+      return value as 'save' | 'discard' | 'keep'
+    })
+  }
+
+  /** 切到别的标签页：没改直接退出，有改问保存、放弃还是保留。 */
+  async function handleAway(session: EditSession): Promise<void> {
+    if (session.closed) return
+    if (sameText(readHostText(session.clone), session.original)) {
+      closeSession(session)
+      return
+    }
+    const choice = await askAway()
+    if (choice === 'discard') {
+      closeSession(session)
+      return
+    }
+    if (choice === 'save') await saveSession(session)
   }
 
   /**
@@ -732,6 +811,7 @@ function EditAction(props: DocumentActionProps): React.ReactElement {
     const opened = openSession(root, address, sessionId, path, absolutePath, version, text)
     if (typeof opened === 'string') return opened
     const session = opened
+    session.onAway = function (): void { void handleAway(session) }
     const onKeyDown = function (event: KeyboardEvent): void {
       if (event.key === 'Escape') {
         event.preventDefault()
