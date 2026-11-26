@@ -1,6 +1,6 @@
 {
   "name": "dsh-classic-coding",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "「DSH·古法编程」：在 DSH Web UI 内置文件预览里切换修改模式，直接编辑并保存工作区文本",
   "keywords": [
     "deepseek-harness",
