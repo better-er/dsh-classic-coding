@@ -233,13 +233,23 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** 取当前文档预览根；官方预览重渲染后旧根可能已脱离文档。 */
-function currentRoot(session: EditSession): HTMLElement {
+/** 按文档地址找当前的预览根；页面上的预览可能已被重渲染换掉。 */
+function findPreviewRoot(address: string): HTMLElement | null {
   const roots = Array.from(document.querySelectorAll<HTMLElement>('[data-textpreview-state]'))
-  const matched = roots.find(function (root): boolean {
-    return root.getAttribute('data-textpreview-url') === session.address
-  })
-  return matched ?? roots[0] ?? session.root
+  return roots.find(function (root): boolean {
+    return root.getAttribute('data-textpreview-url') === address
+  }) ?? null
+}
+
+/**
+ * 取当前文档预览根；官方预览重渲染后旧根可能已脱离文档。
+ * 只认地址匹配的根，不拿别的文件的预览顶替，否则定位与保存都会写错对象。
+ * @param session - 当前会话。
+ */
+function currentRoot(session: EditSession): HTMLElement {
+  const matched = findPreviewRoot(session.address)
+  if (matched !== null) return matched
+  return session.root
 }
 
 /** 统一换行并忽略末尾空行，比较两份文本是否只差文件末尾的换行。 */
@@ -312,12 +322,14 @@ function scrollportOf(host: HTMLElement): HTMLElement | null {
   return null
 }
 
-/** 取原正文背后第一个不透明背景色，克隆覆盖时用它遮住原正文。 */
+/** 取原正文背后第一个完全不透明的背景色，编辑区靠它挡住原正文。 */
 function backgroundOf(host: HTMLElement): string {
   let node: HTMLElement | null = host
   while (node !== null) {
     const color = window.getComputedStyle(node).backgroundColor
-    if (color && color !== 'transparent' && !/rgba\(.*,\s*0\)$/.test(color)) return color
+    // 半透明色挡不住下面的原正文，会露出两层文字，继续往上找。
+    const alpha = /^rgba\([^)]*,\s*([\d.]+)\)$/.exec(color)
+    if (color && color !== 'transparent' && (alpha === null || Number(alpha[1]) >= 1)) return color
     node = node.parentElement
   }
   const base = window.getComputedStyle(document.documentElement).getPropertyValue('--dsw-alias-bg-base').trim()
@@ -330,8 +342,9 @@ function backgroundOf(host: HTMLElement): string {
  * @param clip - 编辑区容器。
  * @param clone - 编辑区里的正文克隆。
  * @param host - 原正文节点。
+ * @returns 编辑区是否拿到了可用的尺寸。
  */
-function layoutClip(clip: HTMLElement, clone: HTMLElement, host: HTMLElement): void {
+function layoutClip(clip: HTMLElement, clone: HTMLElement, host: HTMLElement): boolean {
   const hostRect = host.getBoundingClientRect()
   const view = scrollportOf(host)
   const viewRect = view === null
@@ -354,22 +367,27 @@ function layoutClip(clip: HTMLElement, clone: HTMLElement, host: HTMLElement): v
   const wrapped = host.closest('[data-textpreview-wrap]') !== null && hostWidth <= baseWidth
   style.overflowX = wrapped ? 'hidden' : 'auto'
   style.width = baseWidth + 'px'
-  if (!wrapped) return
+  if (!wrapped) return height > 0 && baseWidth > 0
   const scrollbar = clip.offsetWidth - clip.clientWidth
   const needed = hostWidth + scrollbar
   if (needed > baseWidth) style.width = needed + 'px'
+  return height > 0 && baseWidth > 0
 }
 
-/** 摆好当前会话的编辑区。 */
-function syncClip(session: EditSession): void {
-  layoutClip(session.clip, session.clone, session.host)
+/** 摆好当前会话的编辑区；返回编辑区是否拿到了可用的尺寸。 */
+function syncClip(session: EditSession): boolean {
+  return layoutClip(session.clip, session.clone, session.host)
 }
 
 /**
  * 本文件所在标签页是否已不是当前活动页；页面没有标签页结构时一律当作仍在编辑。
+ *
+ * 先按标签标题匹配文件名。右栏窄时标题会被截断成「client (2 ...」，
+ * 完整文件名匹配不上，这时退回看预览根是否还可见，否则一碰正文就会被误判成切走。
  * @param session - 当前会话。
+ * @param root - 当前预览根。
  */
-function isAway(session: EditSession): boolean {
+function isAway(session: EditSession, root: HTMLElement): boolean {
   const name = session.address.split('/').pop() ?? ''
   if (name === '') return false
   const tabs = Array.from(document.querySelectorAll<HTMLElement>('[role="tab"]'))
@@ -378,10 +396,7 @@ function isAway(session: EditSession): boolean {
     return (tab.textContent ?? '').includes(name)
   })
   if (own !== undefined) return own.getAttribute('aria-selected') !== 'true'
-  const selected = tabs.filter(function (tab): boolean {
-    return tab.getAttribute('aria-selected') === 'true'
-  })
-  return selected.length > 0
+  return root.getClientRects().length === 0
 }
 
 /**
@@ -410,8 +425,10 @@ function placeCaretAtVisibleStart(clip: HTMLElement, clone: HTMLElement): void {
  */
 function trackClip(session: EditSession): void {
   const sync = function (): void {
+    if (session.closed) return
+    const root = currentRoot(session)
     // 切到别的标签页时把编辑区藏起来，并按「无修改直接退出、有修改问用户」处理。
-    if (isAway(session)) {
+    if (isAway(session, root)) {
       session.clip.style.display = 'none'
       if (!session.away) {
         session.away = true
@@ -420,20 +437,25 @@ function trackClip(session: EditSession): void {
       return
     }
     session.away = false
-    session.clip.style.display = ''
-    const current = editableHost(currentRoot(session)) ?? session.host
-    if (current !== session.host) {
-      // 预览重渲染换掉了正文节点：新节点照旧隐藏，编辑仍在克隆上进行。
-      session.host.style.visibility = ''
-      session.host = current
-      current.style.visibility = 'hidden'
-    }
+    const current = editableHost(root)
+    if (current !== null && current !== session.host) session.host = current
     if (!session.clip.isConnected) {
       // 预览连父容器一起换了，把克隆挂回新正文旁边，样式上下文随之恢复。
       const mount = session.host.parentElement ?? document.body
       mount.append(session.clip)
     }
-    syncClip(session)
+    // 原正文不隐藏，编辑区用不透明背景盖住它。算不出可用尺寸时就把编辑区收起来，
+    // 让原正文露出来；预览重渲染期间会短暂量不到尺寸，下一轮同步自己恢复。
+    session.clip.style.display = ''
+    const hostRect = session.host.getBoundingClientRect()
+    // 两边都量不出几何说明当前环境没有布局，不能据此判定失败，交给真实渲染去量。
+    const measurable = hostRect.width > 1 && hostRect.height > 1
+    if (measurable && !syncClip(session)) {
+      session.clip.style.display = 'none'
+      console.error('[classic-coding] 编辑区算不出尺寸，暂时退回预览', session.clip.getAttribute('style'))
+    } else {
+      syncClip(session)
+    }
   }
   session.onSync = sync
   sync()
@@ -460,6 +482,9 @@ function prepareHost(host: HTMLElement): void {
   for (const line of Array.from(host.querySelectorAll<HTMLElement>('[data-textpreview-line], .line'))) {
     trimTrailingNewline(line)
     if ((line.textContent ?? '') === '') line.textContent = '\u200b'
+    // 进入时样式可算，把行盒判定记在元素上。切走后编辑区可能连同父容器被摘出文档，
+    // 那时读不回计算样式，代码预览的 .line 会被误判成行内元素，换行就全丢了。
+    if (isBlockElement(line)) line.dataset.ccBlock = '1'
   }
 }
 
@@ -493,6 +518,13 @@ function isBlockElement(el: Element): boolean {
   return /^(DIV|P|LI|PRE|BLOCKQUOTE|SECTION|ARTICLE|H[1-6]|TR|TABLE|UL|OL)$/.test(el.tagName)
 }
 
+/** 记下行盒判定；必须在元素已挂进文档时调用，脱离文档读不到计算样式。 */
+function markBlockLines(host: HTMLElement): void {
+  for (const line of Array.from(host.querySelectorAll<HTMLElement>('[data-textpreview-line], .line'))) {
+    if (isBlockElement(line)) line.dataset.ccBlock = '1'
+  }
+}
+
 /**
  * 读出可编辑正文的纯文本。不用 innerText：两种预览的行结构不同，
  * 而且编辑器对块级换行与行尾换行的处理会随浏览器实现漂移。
@@ -514,8 +546,9 @@ function readHostText(host: HTMLElement): string {
     }
     const start = text.length
     for (const child of Array.from(el.childNodes)) walk(child, false)
+    const block = el.dataset.ccBlock === '1' || isBlockElement(el)
     // 空块级元素也要占一行，否则整份内容里的空行会被相邻块级之间的一次换行吞掉。
-    if (!isRoot && isBlockElement(el) && (text.length === start || !text.endsWith('\n'))) text += '\n'
+    if (!isRoot && block && (text.length === start || !text.endsWith('\n'))) text += '\n'
   }
   walk(host, true)
   return text
@@ -569,6 +602,8 @@ function openSession(
   // 定位仍用固定定位，不占文档流。
   const mount = host.parentElement ?? document.body
   mount.append(clip)
+  // 挂进文档之后才读得到计算样式，行盒判定补记在这里才准。
+  markBlockLines(clone)
 
   const session: EditSession = {
     address: address,
@@ -591,7 +626,6 @@ function openSession(
   clone.setAttribute('contenteditable', 'plaintext-only')
   clone.classList.add('dsh-cc-editing')
   clone.spellcheck = false
-  host.style.visibility = 'hidden'
   // 先按原预览的滚动位置摆好编辑区，再放光标：光标落在可见区首行，
   // 浏览器就不会为显示光标把编辑区滚回顶部，切换时位置不会跳。
   const view = scrollportOf(host)
@@ -637,13 +671,28 @@ function EditAction(props: DocumentActionProps): React.ReactElement {
    * 放弃修改：未改直接退出；有未保存的修改先确认，用户不确认就留在编辑模式，
    * 不能静默丢掉。确认后再用内置刷新恢复预览。
    */
-  function cancelSession(session: EditSession): void {
+  async function cancelSession(session: EditSession): Promise<void> {
     const root = currentRoot(session)
     prepareHost(session.clone)
     const changed = !sameText(readHostText(session.clone), session.original)
-    if (changed && !window.confirm('有未保存的修改，确定放弃吗？')) return
+    if (changed) {
+      // 和切走标签时同一套选择：能直接保存，也能留在编辑模式。
+      const choice = await askAway()
+      if (session.closed) return
+      if (choice === 'keep') return
+      if (choice === 'save') {
+        void saveSession(session)
+        return
+      }
+    }
     closeAndReset(session)
     if (changed) refreshPreview(root)
+  }
+
+  /** 只带一个确定按钮的提示，替代会弹出原生框的 window.alert。 */
+  function notify(titleText: string, bodyText: string): Promise<void> {
+    return showChoice(titleText, bodyText, [{ label: '确定', value: 'ok', primary: true }])
+      .then(function (): void {})
   }
 
   /**
@@ -749,12 +798,13 @@ function EditAction(props: DocumentActionProps): React.ReactElement {
   async function handleAway(session: EditSession): Promise<void> {
     if (session.closed) return
     if (sameText(readHostText(session.clone), session.original)) {
-      closeSession(session)
+      closeAndReset(session)
       return
     }
     const choice = await askAway()
     if (choice === 'discard') {
-      closeSession(session)
+      // 必须一并复位工具栏状态，否则按钮还是「取消修改」，下次点击会走取消而不是进入。
+      closeAndReset(session)
       return
     }
     if (choice === 'save') await saveSession(session)
@@ -768,10 +818,19 @@ function EditAction(props: DocumentActionProps): React.ReactElement {
     const root = currentRoot(session)
     if (root.getAttribute('data-textpreview-url') !== session.address) {
       closeAndReset(session)
-      window.alert('预览已切换到别的文件，这次修改没有保存')
+      void notify('修改未保存', '预览已切换到别的文件，这次修改没有保存')
       return
     }
+    const liveHost = editableHost(root)
+    if (liveHost !== null) session.host = liveHost
+    // 切走时预览可能重渲染换掉了父容器，编辑区跟着被摘出文档。那时读不回计算样式，
+    // 行盒会被误判，换行全丢；先挂回文档再整理正文。
+    if (!session.clip.isConnected) {
+      const mount = session.host.parentElement ?? document.body
+      mount.append(session.clip)
+    }
     prepareHost(session.clone)
+    markBlockLines(session.clone)
     const current = readHostText(session.clone)
     if (sameText(current, session.original)) {
       closeAndReset(session)
@@ -794,7 +853,7 @@ function EditAction(props: DocumentActionProps): React.ReactElement {
     } catch (e) {
       // 保留可编辑状态与已改内容，用户可再按一次重试。
       console.error('[classic-coding] 保存失败', e)
-      window.alert('保存失败: ' + messageOf(e))
+      void notify('保存失败', messageOf(e))
     }
   }
 
@@ -816,7 +875,7 @@ function EditAction(props: DocumentActionProps): React.ReactElement {
       if (event.key === 'Escape') {
         event.preventDefault()
         event.stopPropagation()
-        cancelSession(session)
+        void cancelSession(session)
         return
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
@@ -838,7 +897,7 @@ function EditAction(props: DocumentActionProps): React.ReactElement {
   }
 
   /** 进入修改：读取整份文件后把预览正文设为可编辑。 */
-  function enter(): void {
+  async function enter(): Promise<void> {
     if (busy) return
     const button = buttonRef.current
     const root = button === null ? null : button.closest('[data-textpreview-state]')
@@ -856,41 +915,49 @@ function EditAction(props: DocumentActionProps): React.ReactElement {
     const other = activeSession
     if (other !== null && other.address !== address) {
       const changed = !sameText(readHostText(other.clone), other.original)
-      if (changed && !window.confirm('另一个文件还有未保存的修改，确定放弃吗？')) return
+      if (changed) {
+        const choice = await showChoice('另一个文件还有未保存的修改', '放弃这些修改才能打开新的文件。要放弃吗？', [
+          { label: '确定', value: 'discard', primary: true },
+          { label: '取消', value: 'keep', primary: false },
+        ])
+        if (choice !== 'discard') return
+      }
       closeSession(other)
       sessionRef.current = null
       setEditing(false)
     }
+    const api = remote
     setBusy(true)
-    remote.workspaceFiles.readBytes(parsed.sessionId, parsed.path, {}, info.tab.signal)
-      .then(function (result): void {
-        if (!mountedRef.current) return
-        if (!result.ok) throw new Error(result.error.message ?? '读取失败')
-        const file = result.value
-        const error = installEditor(
-          root,
-          address,
-          parsed.sessionId,
-          parsed.path,
-          file.absolutePath,
-          file.version,
-          new TextDecoder().decode(file.data),
-        )
-        if (error !== null) throw new Error(error)
-      })
-      .catch(function (e: unknown): void {
-        console.error('[classic-coding] 进入修改模式失败', e)
-        window.alert('无法进入修改模式: ' + messageOf(e))
-      })
-      .finally(function (): void {
-        if (mountedRef.current) setBusy(false)
-      })
+    try {
+      const result = await api.workspaceFiles.readBytes(parsed.sessionId, parsed.path, {}, info.tab.signal)
+      if (!mountedRef.current) return
+      if (!result.ok) throw new Error(result.error.message ?? '读取失败')
+      const file = result.value
+      // 读取是异步的，期间预览可能已经重渲染或关掉，重新按地址取当前的根。
+      const live = findPreviewRoot(address)
+      if (live === null || !live.isConnected) throw new Error('预览已关闭')
+      const error = installEditor(
+        live,
+        address,
+        parsed.sessionId,
+        parsed.path,
+        file.absolutePath,
+        file.version,
+        new TextDecoder().decode(file.data),
+      )
+      if (error !== null) throw new Error(error)
+    } catch (e: unknown) {
+      console.error('[classic-coding] 进入修改模式失败', e)
+      void notify('无法进入修改模式', messageOf(e))
+    } finally {
+      if (mountedRef.current) setBusy(false)
+    }
   }
 
   /** 取消修改：退出可编辑，已改过的 DOM 由内置刷新恢复。 */
   function cancel(): void {
     const session = sessionRef.current
-    if (session !== null) cancelSession(session)
+    if (session !== null) void cancelSession(session)
   }
 
   // 组件会随官方预览重渲染重挂；会话放模块级，卸载时只清本地引用。
@@ -916,7 +983,7 @@ function EditAction(props: DocumentActionProps): React.ReactElement {
     'aria-label': editing ? '古法编程：取消修改' : '古法编程：修改文件',
     'aria-pressed': editing,
     disabled: busy,
-    onClick: editing ? cancel : enter,
+    onClick: editing ? cancel : function (): void { void enter() },
   },
   // 修改按键是「古」字，进入修改后翻成倒写的「古」表示退出。
   React.createElement('span', {
