@@ -23,9 +23,6 @@ const tick = (ms = 20) => new Promise(resolve => setTimeout(resolve, ms))
 const window = new Window({ url: 'http://localhost/' })
 const alerts = []
 window.alert = (message) => { alerts.push(message) }
-let confirmAnswer = true
-let confirmCalls = 0
-window.confirm = () => { confirmCalls++; return confirmAnswer }
 const document = window.document
 globalThis.window = window
 globalThis.document = document
@@ -154,7 +151,7 @@ await tick()
 check('读取一次整份文件', reads === 1, reads)
 const entered = cloneHost()
 check('正文变为可编辑', entered !== null && entered.getAttribute('contenteditable') === 'plaintext-only', entered === null ? null : entered.getAttribute('contenteditable'))
-check('原正文被隐藏', plain.style.visibility === 'hidden', plain.style.visibility)
+check('原正文仍在，编辑区盖在上面', plain.style.visibility !== 'hidden' && document.querySelector('.dsh-cc-clip') !== null)
 check('出现显式保存按钮', toolbar.querySelector('.dsh-cc-save') !== null)
 check('进入时不写盘', writes.length === 0)
 check('克隆保留原文行结构', entered !== null && entered.innerText.replace(/\u200b/g, '').replace(/\n+$/, '') === 'const a = 1\n\nconst b = 2', entered === null ? null : JSON.stringify(entered.innerText))
@@ -177,7 +174,10 @@ check('再次进入', cloneHost() !== null && cloneHost().getAttribute('contente
 setLine(0, 'const a = 9')
 toolbar.querySelector('.dsh-cc-edit-action').click()
 await tick()
-check('改过之后取消要先确认', confirmCalls === 1, confirmCalls)
+const cancelMask = document.querySelector('.dsh-cc-conflict-mask')
+check('改过之后取消要先确认', cancelMask !== null)
+cancelMask.querySelector('[data-choice="discard"]').click()
+await tick()
 check('取消不写盘', writes.length === 1, writes.length)
 check('取消后退出可编辑', cloneHost() === null)
 check('取消后原正文恢复可见', plain.style.visibility !== 'hidden', plain.style.visibility)
@@ -186,13 +186,19 @@ console.log('[编辑] 取消确认')
 editButton.click()
 await tick()
 setLine(0, 'const a = 7')
-confirmAnswer = false
 toolbar.querySelector('.dsh-cc-edit-action').click()
+await tick()
+const keepMask = document.querySelector('.dsh-cc-conflict-mask')
+check('取消时弹出应用内确认框', keepMask !== null)
+keepMask.querySelector('[data-choice="keep"]').click()
 await tick()
 check('不确认时留在编辑模式', cloneHost() !== null && cloneHost().getAttribute('contenteditable') === 'plaintext-only')
 check('不确认时修改还在', cloneHost() !== null && cloneHost().textContent.includes('const a = 7'))
-confirmAnswer = true
 toolbar.querySelector('.dsh-cc-edit-action').click()
+await tick()
+const discardMask = document.querySelector('.dsh-cc-conflict-mask')
+check('再次取消仍弹确认框', discardMask !== null)
+discardMask.querySelector('[data-choice="discard"]').click()
 await tick()
 check('确认后退出编辑', cloneHost() === null)
 check('确认后不写盘', writes.length === 1, writes.length)
@@ -284,7 +290,81 @@ check('切走放弃不写盘', writes.length === 2, writes.length)
 tabOwn.remove()
 tabOther.remove()
 
+console.log('[编辑] 切走后保存')
+const writesBeforeAwaySave = writes.length
+const tabKeep = document.createElement('div')
+tabKeep.setAttribute('role', 'tab')
+tabKeep.setAttribute('aria-selected', 'true')
+tabKeep.textContent = 'notes.ts'
+const tabLeave = document.createElement('div')
+tabLeave.setAttribute('role', 'tab')
+tabLeave.setAttribute('aria-selected', 'false')
+tabLeave.textContent = '其他'
+document.body.append(tabKeep, tabLeave)
+setLines(['const a = 1', '', 'const b = 2'])
+editButton.click()
+await tick(60)
+setLine(0, 'const a = 2')
+tabKeep.setAttribute('aria-selected', 'false')
+tabLeave.setAttribute('aria-selected', 'true')
+await tick(420)
+const awaySave = document.querySelector('.dsh-cc-conflict')
+check('切走弹选择框', awaySave !== null)
+awaySave.querySelector('[data-choice="save"]').click()
+await tick(150)
+const awayPayload = writes.length > writesBeforeAwaySave ? writes[writes.length - 1].payload : null
+check('切走后保存保留换行', awayPayload !== null && awayPayload.content === 'const a = 2\n\nconst b = 2\n', awayPayload === null ? null : awayPayload.content)
+check('切走后保存退出可编辑', cloneHost() === null)
+tabKeep.remove()
+tabLeave.remove()
+
+console.log('[编辑] 切走后编辑区被摘下仍保留换行')
+// 预览重渲染会换掉父容器，编辑区可能连同一起被摘出文档；此时读正文不能依赖布局。
+const writesBeforeDetached = writes.length
+const tabKeep2 = document.createElement('div')
+tabKeep2.setAttribute('role', 'tab')
+tabKeep2.setAttribute('aria-selected', 'true')
+tabKeep2.textContent = 'notes.ts'
+const tabLeave2 = document.createElement('div')
+tabLeave2.setAttribute('role', 'tab')
+tabLeave2.setAttribute('aria-selected', 'false')
+tabLeave2.textContent = '其他'
+document.body.append(tabKeep2, tabLeave2)
+setLines(['const a = 1', '', 'const b = 2'])
+editButton.click()
+await tick(60)
+setLine(0, 'const a = 8')
+tabKeep2.setAttribute('aria-selected', 'false')
+tabLeave2.setAttribute('aria-selected', 'true')
+await tick(420)
+const detachedChoice = document.querySelector('.dsh-cc-conflict')
+check('摘下前弹出选择框', detachedChoice !== null)
+const detachedClip = document.querySelector('.dsh-cc-clip')
+detachedClip.remove()
+detachedChoice.querySelector('[data-choice="save"]').click()
+await tick(150)
+const detachedPayload = writes.length > writesBeforeDetached ? writes[writes.length - 1].payload : null
+check('编辑区被摘下后保存仍保留换行', detachedPayload !== null && detachedPayload.content === 'const a = 8\n\nconst b = 2\n', detachedPayload === null ? null : detachedPayload.content)
+tabKeep2.remove()
+tabLeave2.remove()
+
+console.log('[编辑] 取消时选保存')
+const writesBeforeCancel = writes.length
+setLines(['const a = 1', '', 'const b = 2'])
+editButton.click()
+await tick(60)
+setLine(0, 'const a = 4')
+toolbar.querySelector('.dsh-cc-edit-action').click()
+await tick()
+const saveMask = document.querySelector('.dsh-cc-conflict-mask')
+check('取消时给出保存分支', saveMask !== null && saveMask.textContent.includes('保存'))
+saveMask.querySelector('[data-choice="save"]').click()
+await tick(100)
+check('选保存后写盘', writes.length === writesBeforeCancel + 1, writes.length)
+check('选保存后退出可编辑', cloneHost() === null)
+
 console.log('[编辑] 代码视图整份文本')
+const writesBeforeCode = writes.length
 // 代码视图把整份源码放在一个 span.line 里，换行是文本内容本身，不能再被整理掉。
 const codeOriginal = 'const a = 1\n\nconst b = 2\n'
 const codeAddress = 'dsh-resource://file/session/s1/sample.ts'
@@ -334,10 +414,10 @@ const codeEntered = cloneHost()
 check('代码视图正文可编辑', codeEntered !== null && codeEntered.getAttribute('contenteditable') === 'plaintext-only', codeEntered === null ? null : codeEntered.getAttribute('contenteditable'))
 const codeLinesNow = codeEntered === null ? null : [...codeEntered.querySelectorAll('.line')].map(line => line.textContent)
 check('代码视图行结构与换行保留', codeLinesNow !== null && JSON.stringify(codeLinesNow) === JSON.stringify(['const a = 1', '\u200b', 'const b = 2']), codeLinesNow)
-check('代码视图进入时不写盘', writes.length === 2, writes.length)
+check('代码视图进入时不写盘', writes.length === writesBeforeCode, writes.length)
 codeToolbar.querySelector('.dsh-cc-save').click()
 await tick(40)
-check('代码视图未改动保存不写盘', writes.length === 2, writes.length)
+check('代码视图未改动保存不写盘', writes.length === writesBeforeCode, writes.length)
 check('代码视图保存后退出可编辑', cloneHost() === null)
 codeReactRoot.unmount()
 
